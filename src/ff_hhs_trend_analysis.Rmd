@@ -1,0 +1,1009 @@
+---
+title: "HHS Trend Analysis"
+author: "Mariano Viz"
+date: "2024-10-28"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 4
+    toc_float:
+      collapsed: false      
+      smooth_scroll: true
+editor_options:
+  markdown:
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, collapse = TRUE, comment = "#>", fig.align = 'center')
+
+
+library(tidyverse)
+library(here)
+library(janitor)
+library(effsize)
+library(jsonlite)
+library(readxl)
+library(data.world)
+library(lmtest)
+library(sandwich)
+library(broom)
+library(rstatix)
+library(gridExtra)
+library(ggridges)
+library(readr)
+library(RColorBrewer)
+library(ggbeeswarm)
+
+
+
+```
+
+
+
+
+
+```{r}
+# Read in HHS data
+fastfield <- read_csv(here("data", "raw", "hhs_fastfield.csv"))
+#kobo_1 <- read_excel(here("data", "raw", "hhs_kobo_mod_1.xlsx")) # Same as fp
+kobo_1_fp <- read_csv(here("data", "raw", "hhs_fp.csv"))
+#kobo_2 <- read_excel(here("data", "raw", "hhs_kobo_mod_2.xlsx")) # Same as fp (divided for hon and phi)
+# devtools::install_github("datadotworld/data.world-r")
+# devtools::install_github("datadotworld/dwapi-r")
+dwapi::configure(auth_token = "eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJyLWFuZC1yLXN0dWRpbzptYXJpYW5vdml6IiwiaXNzIjoiY2xpZW50OnItYW5kLXItc3R1ZGlvOmFnZW50Om1hcmlhbm92aXo6OjEyYzRkOTYzLTk0NDctNDg5Ni04ZmM0LTQ5YTM1ZWQ2MWQ0NSIsImlhdCI6MTcyODUwNTU0MCwicm9sZSI6WyJ1c2VyX2FwaV9hZG1pbiIsInVzZXJfYXBpX3JlYWQiLCJ1c2VyX2FwaV93cml0ZSJdLCJnZW5lcmFsLXB1cnBvc2UiOnRydWUsInNhbWwiOnt9fQ.MSVsDGnQK4y3WWiWYrDluIYsojOmmbrJC-PeFSgZY7qDq63pIobopiDTHcaCX8LG7pwuBC5HBQrO8Kk8ifahpQ")
+sql_stmt <- qry_sql("SELECT * FROM hhs_fp_hnd")  
+kobo_2_fp_hon <- data.world::query(
+  sql_stmt, "rare/household-surveys"
+)
+kobo_2_fp_phi <- read_csv(here("data", "raw", "hhs_fp_phl.csv"))
+#kobo_3 <- read_excel(here("data", "raw", "hhs_kobo_mod_3.xlsx")) #Check which sheets are relevant!
+
+
+
+# Read PPP-adjusted international dollars dataset
+ppp <- read_csv(here("data", "raw", "PPP_world_bank", "PPP_world_bank.csv"),
+                skip = 4)
+```
+
+
+# FF Household Surveys Conducted
+
+
+```{r}
+# Sites
+fastfield$ma_name <- tolower(gsub(" ", "_", fastfield$maa))
+kobo_1_fp$ma_name <- tolower(gsub(" ", "_", kobo_1_fp$ma_name))
+kobo_2_fp_hon$ma_name <- tolower(gsub(" ", "_", kobo_2_fp_hon$ma_name))
+kobo_2_fp_phi$ma_name <- tolower(gsub(" ", "_", kobo_2_fp_phi$level4_name))
+
+fastfield <- fastfield %>% 
+  filter(!is.na(ma_name))
+
+kobo_1_fp <- kobo_1_fp %>% 
+  filter(!is.na(ma_name))
+
+kobo_2_fp_hon <- kobo_2_fp_hon %>% 
+  filter(!is.na(ma_name))
+
+kobo_2_fp_phi <- kobo_2_fp_phi %>% 
+  filter(!is.na(ma_name))
+
+# Get years
+kobo_1_fp$year <- year(ymd(kobo_1_fp$submission_time)) 
+kobo_2_fp_hon$year <- year(ymd(kobo_2_fp_hon$submission_time))
+kobo_2_fp_phi$year <- year(ymd(kobo_2_fp_phi$submission_time))
+
+# Country
+fastfield <- fastfield %>% 
+  rename(country = iso3)
+
+fastfield <- fastfield %>%
+  mutate(country = recode(country,
+                          "HND" = "Honduras",
+                          "BRA" = "Brazil",
+                          "FSM" = "Federated States of Micronesia",
+                          "IDN" = "Indonesia",
+                          "PLW" = "Palau",
+                          "GTM" = "Guatemala",
+                          "MOZ" = "Mozambique",
+                          "PHL" = "Philippines"))
+
+
+kobo_1_fp <- kobo_1_fp %>%
+  filter(!is.na(country)) %>% # Remove rows with NA in 'country'
+  mutate(country = recode(country,
+                          "HND" = "Honduras",
+                          "BRA" = "Brazil",
+                          "FSM" = "Federated States of Micronesia",
+                          "IDN" = "Indonesia",
+                          "PLW" = "Palau",
+                          "MOZ" = "Mozambique",
+                          "PHL" = "Philippines"))
+
+kobo_2_fp_hon <- kobo_2_fp_hon %>%
+  mutate(country = recode(country,
+                          "HND" = "Honduras"))
+
+kobo_2_fp_phi <- kobo_2_fp_phi %>%
+  mutate(country = recode(country,
+                          "PHL" = "Philippines"))
+
+
+
+combined_hhs <- rbind(
+  fastfield %>% select(ma_name, year, country),
+  kobo_1_fp %>% select(ma_name, year, country),
+  kobo_2_fp_hon %>% select(ma_name, year, country),
+  kobo_2_fp_phi %>% select(ma_name, year, country)
+)
+
+survey_count <- combined_hhs %>%
+  group_by(ma_name, year, country) %>%
+  summarize(survey_count = n()) %>% 
+  arrange(desc(survey_count)) 
+
+survey_count_by_ma <- survey_count %>%
+  group_by(ma_name, country) %>%
+  summarise(
+    years = paste(unique(year), collapse = ", "), 
+    total_survey_count = sum(survey_count)         
+  ) %>%
+  mutate(year_count = sapply(strsplit(years, ", "), length)) %>% 
+  arrange(desc(year_count)) 
+
+survey_summary <- survey_count %>%
+  group_by(year, country) %>%
+  summarise(total_surveys = sum(survey_count)) %>%
+  ungroup()
+
+# Bar plot --> DONT LIKE THIS PLOT
+# ggplot(survey_summary, aes(x = year, y = total_surveys, fill = country)) +
+#   geom_bar(stat = "identity", position = "dodge") +
+#   labs(title = "Total Number of Surveys per Year by Country",
+#        x = "Year",
+#        y = "Total Surveys") +
+#   theme_minimal() +
+#   theme(legend.title = element_blank()) +
+#   scale_fill_brewer(palette = "Set3")
+
+# Range of years
+years <- seq(min(survey_summary$year), max(survey_summary$year), by = 1)
+
+# Stacked bar plot
+ggplot(survey_summary, aes(x = year, y = total_surveys, fill = country)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_x_continuous(breaks = years) +  # Show all years on x-axis
+  labs(title = "Total Number of Surveys per Year by Country",
+       x = "Year",
+       y = "Total Surveys") +
+  theme_minimal() +
+  theme(legend.title = element_blank()) +
+  scale_fill_brewer(palette = "Set3")
+
+
+# Faceted plot for each country
+ggplot(survey_summary, aes(x = year, y = total_surveys, fill = country)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_x_continuous(breaks = years) +  
+  labs(title = "Total Number of Surveys per Year by Country",
+       x = "Year",
+       y = "Total Surveys") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1)) +  
+  scale_fill_brewer(palette = "Set3") +
+  facet_wrap(~ country, scales = "free_y")
+ 
+
+# 40.000 surveys
+
+```
+
+
+```{r}
+# Remove countries with one year or few surveys
+
+fastfield <- fastfield %>% 
+  filter(!country %in% c("Palau", "Guatemala"))
+kobo_1_fp <- kobo_1_fp %>% 
+  filter(!country %in% c("Palau", "Guatemala"))
+
+```
+
+
+# HH Income and Income Source Data
+
+
+## Question 83: Household Income
+
+*What is your household’s average monthly income from all activities, including salaried and non-salaried labor?*
+
+(local currency) --> PPP-adjusted income (World Bank)[]
+
+
+
+## Question 14: Income Source Data
+
+*Please indicate from the following list all sources of household income this year, and estimate their contribution to overall household income as a percentage.*
+
+a. Farming (growing crops and/ or raising livestock)
+
+b. Harvesting forest products (timber, charcoal, non-timber forest products)
+
+c. Artisanal Fishing (capture of fish, crustaceans and other marine resources for sale or consumption)
+
+d. Fish buying or trading
+
+e. Fish processing (cleaning, drying, etc)
+
+f. Aquaculture (fish, shrimp, seaweed, etc.; includes grow out pens/ raising small captured fish for sale at larger size)
+
+g. Extraction of non-renewable marine resources (includes coral mining, sand mining, harvest of live coral, etc.)
+
+h. Marine tourism (includes scuba, snorkel, glass-bottom boats, sailing, water-skiing, jet skis, etc.)
+
+i. Other wage labor (e.g. teacher, medical, handcraft professionals, forestry or mining concession worker)
+
+j. Industrial Fishing (capture of fish, crustaceans and other marine resources for sale or consumption)
+
+k. Other (specify)
+
+
+
+
+
+```{r}
+# Q83
+
+# Find data
+colnames(fastfield)[grepl("83", colnames(fastfield))]
+colnames(kobo_1_fp)[grepl("average_income", colnames(kobo_1_fp))] # 83_hh_average_income
+colnames(kobo_2_fp_hon)[grepl("average_income", colnames(kobo_2_fp_hon))] # 57_hh_average_income
+colnames(kobo_2_fp_phi)[grepl("average_income", colnames(kobo_2_fp_phi))]
+
+
+# Rename
+kobo_2_fp_hon <- kobo_2_fp_hon %>% 
+  rename('83_hh_average_income' = '57_hh_average_income')
+kobo_2_fp_phi <- kobo_2_fp_phi %>% 
+  rename('83_hh_average_income' = '57_hh_average_income')
+
+
+
+# Answers: local currency
+
+unique(fastfield$country)
+ppp$`Country Name` #Brazil, Micronesia, Fed. Sts., Honduras, Mozambique, Philippines
+
+
+fastfield_83 <- fastfield %>% 
+  select(country, year, '83_hh_average_income')
+kobo_1_fp_83 <- kobo_1_fp %>% 
+  select(country, year, '83_hh_average_income')
+kobo_2_fp_hon_83 <- kobo_2_fp_hon %>% 
+  select(country, year, '83_hh_average_income')
+kobo_2_fp_phi_83 <- kobo_2_fp_phi %>% 
+  select(country, year, '83_hh_average_income')
+
+
+# Convert to PPP-adjusted income
+
+country_mapping <- c(
+  "Honduras" = "Honduras",
+  "Brazil" = "Brazil",
+  "Micronesia, Fed. Sts." = "Federated States of Micronesia",
+  "Indonesia" = "Indonesia",
+  "Mozambique" = "Mozambique",
+  "Philippines" = "Philippines"
+)
+
+
+ppp <- ppp %>%
+  mutate(`2024` = `2023`) # using 2023 values for 2024 since the dataset has no values for 2024
+
+
+ppp_long <- ppp %>%
+  rename(country = `Country Name`) %>%
+  mutate(country = recode(country, !!!country_mapping)) %>%
+  pivot_longer(cols = starts_with("19") | starts_with("20"),  
+               names_to = "year",
+               values_to = "ppp_value") %>%
+  mutate(year = as.numeric(year))  
+
+ppp_long <- ppp_long %>% 
+  select(country, year, ppp_value)
+
+
+convert_to_ppp <- function(data) {
+  data %>%
+    left_join(ppp_long, by = c("country", "year")) %>%
+    mutate(`83_hh_average_income_ppp` = `83_hh_average_income` / ppp_value) %>%
+    select(-ppp_value)  # Remove PPP column after calculation if desired
+}
+
+# Apply the function to each dataset to get PPP-adjusted income
+fastfield_83 <- convert_to_ppp(fastfield_83)
+kobo_1_fp_83 <- convert_to_ppp(kobo_1_fp_83)
+kobo_2_fp_hon_83 <- convert_to_ppp(kobo_2_fp_hon_83)
+kobo_2_fp_phi_83 <- convert_to_ppp(kobo_2_fp_phi_83)
+
+
+# sum(is.na(fastfield_83$'83_hh_average_income_ppp'))
+# sum(is.na(kobo_1_fp_83$'83_hh_average_income_ppp'))
+# sum(is.na(kobo_2_fp_hon_83$'83_hh_average_income_ppp'))
+# sum(is.na(kobo_2_fp_phi_83$'83_hh_average_income_ppp'))
+
+# Combine data for question 83
+q83_data <- bind_rows(
+  fastfield_83 %>% select(year, country, `83_hh_average_income_ppp`),
+  kobo_1_fp_83 %>% select(year, country, `83_hh_average_income_ppp`),
+  kobo_2_fp_hon_83 %>% select(year, country, `83_hh_average_income_ppp`),
+  kobo_2_fp_phi_83 %>% select(year, country, `83_hh_average_income_ppp`))
+
+# Remove NAs
+q83_data <- q83_data %>%
+  mutate(`83_hh_average_income_ppp` = as.numeric(`83_hh_average_income_ppp`))
+q83_data <- q83_data %>%
+  filter(!is.na(`83_hh_average_income_ppp`))
+
+# Round PPP-adjusted income
+q83_data <- q83_data %>%
+  mutate(`83_hh_average_income_ppp` = round(`83_hh_average_income_ppp`, 2))
+
+# Q14
+
+# Find data
+colnames(fastfield)[grepl("14", colnames(fastfield))]
+colnames(kobo_1_fp)[grepl("14", colnames(kobo_1_fp))] # 14*_income_* (e.g. 14a_income_farming)
+colnames(kobo_2_fp_hon)[grepl("10", colnames(kobo_2_fp_hon))] # 10*_income_* (e.g. 10a_income_farming)
+colnames(kobo_2_fp_phi)[grepl("current_fish_catch", colnames(kobo_2_fp_phi))]
+
+
+# Select % income answers
+fastfield_14 <- fastfield %>%
+  select(country, year, matches("14.*income"))
+  # Check if all 14*_income add up to 100%
+  fastfield_14_total <- fastfield_14 %>%
+    rowwise() %>%
+    mutate(`14_income_total` = sum(c_across(-c(country, year)), na.rm = TRUE)) %>%
+    ungroup()
+
+kobo_1_fp_14 <- kobo_1_fp %>%
+  select(country, year, matches("14.*income"))
+
+kobo_2_fp_hon_14 <- kobo_2_fp_hon %>%
+  select(country, year, matches("10.*income"))
+
+kobo_2_fp_phi_14 <- kobo_2_fp_phi %>%
+  select(country, year, matches("10.*income"))
+
+
+# Rename columns
+fastfield_14 <- fastfield_14 %>%
+  rename_with(~ sub(".*income_", "income_", .), starts_with("14"))
+
+kobo_1_fp_14 <- kobo_1_fp_14 %>%
+  rename_with(~ sub(".*income_", "income_", .), starts_with("14"))
+
+kobo_2_fp_hon_14 <- kobo_2_fp_hon_14 %>%
+  rename_with(~ sub(".*income_", "income_", .), starts_with("10"))
+
+kobo_2_fp_phi_14 <- kobo_2_fp_phi_14 %>%
+  rename_with(~ sub(".*income_", "income_", .), starts_with("10"))
+
+# colnames(fastfield_14)
+# colnames(kobo_1_fp_14)
+# colnames(kobo_2_fp_hon_14)
+# colnames(kobo_2_fp_phi_14)
+
+# Combine data for question 14
+q14_data <- bind_rows(fastfield_14, kobo_1_fp_14, kobo_2_fp_hon_14, kobo_2_fp_phi_14)
+
+# Rename all NAs as 0
+q14_data <- q14_data %>%
+  mutate(across(everything(), ~ replace_na(., 0)))
+
+
+# Q83 and Q14 (TOGETHER):
+
+fastfield_83_14 <- fastfield %>% 
+  select(country, year, '83_hh_average_income', matches("14.*income"))
+kobo_1_fp_83_14 <- kobo_1_fp %>% 
+  select(country, year, '83_hh_average_income', matches("14.*income"))
+kobo_2_fp_hon_83_14 <- kobo_2_fp_hon %>% 
+  select(country, year, '83_hh_average_income', matches("10.*income"))
+kobo_2_fp_phi_83_14 <- kobo_2_fp_phi %>% 
+  select(country, year, '83_hh_average_income', matches("10.*income"))
+
+
+# Rename columns
+fastfield_83_14 <- fastfield_83_14 %>%
+  rename_with(~ sub(".*income_", "income_", .), starts_with("14"))
+kobo_1_fp_83_14 <- kobo_1_fp_83_14 %>%
+  rename_with(~ sub(".*income_", "income_", .), starts_with("14"))
+kobo_2_fp_hon_83_14 <- kobo_2_fp_hon_83_14 %>%
+  rename_with(~ sub(".*income_", "income_", .), starts_with("10"))
+kobo_2_fp_phi_83_14 <- kobo_2_fp_phi_83_14 %>%
+  rename_with(~ sub(".*income_", "income_", .), starts_with("10"))
+
+
+fastfield_83_14 <- convert_to_ppp(fastfield_83_14)
+kobo_1_fp_83_14 <- convert_to_ppp(kobo_1_fp_83_14)
+kobo_2_fp_hon_83_14 <- convert_to_ppp(kobo_2_fp_hon_83_14)
+kobo_2_fp_phi_83_14 <- convert_to_ppp(kobo_2_fp_phi_83_14)
+
+# Combine data for question 83 and 14
+q83_14_data <- bind_rows(fastfield_83_14, kobo_1_fp_83_14, kobo_2_fp_hon_83_14, kobo_2_fp_phi_83_14)
+
+# Remove NAs
+q83_14_data <- q83_14_data %>%
+  mutate(`83_hh_average_income_ppp` = as.numeric(`83_hh_average_income_ppp`))
+q83_14_data <- q83_14_data %>%
+  filter(!is.na(`83_hh_average_income_ppp`))
+
+# Round PPP-adjusted income
+q83_14_data <- q83_14_data %>%
+  mutate(`83_hh_average_income_ppp` = round(`83_hh_average_income_ppp`, 2))
+```
+
+
+
+
+
+```{r}
+
+# summary(q83_data$`83_hh_average_income_ppp`)
+
+# Remove values above the 99th percentile (errors)
+q83_data_filtered <- q83_data %>%
+  filter(`83_hh_average_income_ppp` < quantile(`83_hh_average_income_ppp`, 0.99, na.rm = TRUE))
+q83_14_data_filtered <- q83_14_data %>%
+  filter(`83_hh_average_income_ppp` < quantile(`83_hh_average_income_ppp`, 0.99, na.rm = TRUE))
+
+# Recalculate the trend with filtered data
+q83_trend_filtered <- q83_data_filtered %>%
+  group_by(country, year) %>%
+  summarize(avg_income = mean(`83_hh_average_income_ppp`, na.rm = TRUE))
+
+# Plot with filtered data
+ggplot(q83_data_filtered, aes(x = as.factor(year), y = `83_hh_average_income_ppp`, fill = country)) +
+  geom_violin(alpha = 0.5) +
+  geom_line(data = q83_trend_filtered, aes(x = as.factor(year), y = avg_income, group = 1), color = "black", size = 0.5) +
+  geom_point(data = q83_trend_filtered, aes(x = as.factor(year), y = avg_income), color = "black", size = 2) +
+  labs(
+    title = "Trend of Average Monthly Household Income (Q83) by Country",
+    x = "Year",
+    y = "Average Monthly Income per Household (PPP)"
+  ) +
+    scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  facet_wrap(~ country)
+
+
+
+
+```
+Trend of Average Monthly Household Income (Q83) by Country, 2019–2024: The violin plots illustrate the distribution of household income per month for each year, showing the density of values, while the black dots and lines represent the annual average income trend.
+
+
+
+```{r}
+# Reshape the data from wide to long format for easier plotting
+income_data_long <- q83_14_data_filtered %>%
+  select(country, year, starts_with("income_")) %>%
+  pivot_longer(cols = starts_with("income_"), names_to = "income_source", values_to = "income_proportion")
+
+# Plot stacked bar chart by year with facets for each country and improved color palette
+ggplot(income_data_long, aes(x = as.factor(year), y = income_proportion, fill = income_source)) +
+  geom_bar(stat = "identity", position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+    scale_fill_brewer(palette = "Set3") +  
+  labs(
+    title = "Proportion of Income from Different Sources (Q14) by Year",
+    x = "Year",
+    y = "Proportion of Total Income",
+    fill = "Income Source"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  ) +
+  facet_wrap(~ country)
+
+
+
+
+```
+Proportion of Income from Different Sources (Q14) by Year, 2019–2024: Stacked bar plots show the proportion of household income derived from various sources across different countries. Each bar represents a year, segmented by income source, highlighting changes in income composition over time.
+
+```{r}
+# Adjust calculations by dividing proportions by 100
+q83_14_data_filtered_inc <- q83_14_data_filtered %>%
+  mutate(
+    income_farming = `83_hh_average_income_ppp` * (income_farming / 100),
+    income_harvesting = `83_hh_average_income_ppp` * (income_harvesting / 100),
+    income_fishing_artisanal = `83_hh_average_income_ppp` * (income_fishing_artisanal / 100),
+    income_industrial = `83_hh_average_income_ppp` * (income_industrial / 100),
+    income_buying_trading = `83_hh_average_income_ppp` * (income_buying_trading / 100),
+    income_processing = `83_hh_average_income_ppp` * (income_processing / 100),
+    income_fishing_aquaculture = `83_hh_average_income_ppp` * (income_fishing_aquaculture / 100),
+    income_extraction = `83_hh_average_income_ppp` * (income_extraction / 100),
+    income_tourism = `83_hh_average_income_ppp` * (income_tourism / 100),
+    income_other_wage = `83_hh_average_income_ppp` * (income_other_wage / 100),
+    income_other = `83_hh_average_income_ppp` * (income_other / 100)
+  ) 
+
+#colnames(q83_14_data_filtered_inc)
+
+q83_14_data_filtered_long <- q83_14_data_filtered %>%
+  mutate(
+    income_farming = `83_hh_average_income_ppp` * (income_farming / 100),
+    income_harvesting = `83_hh_average_income_ppp` * (income_harvesting / 100),
+    income_fishing_artisanal = `83_hh_average_income_ppp` * (income_fishing_artisanal / 100),
+    income_industrial = `83_hh_average_income_ppp` * (income_industrial / 100),
+    income_buying_trading = `83_hh_average_income_ppp` * (income_buying_trading / 100),
+    income_processing = `83_hh_average_income_ppp` * (income_processing / 100),
+    income_fishing_aquaculture = `83_hh_average_income_ppp` * (income_fishing_aquaculture / 100),
+    income_extraction = `83_hh_average_income_ppp` * (income_extraction / 100),
+    income_tourism = `83_hh_average_income_ppp` * (income_tourism / 100),
+    income_other_wage = `83_hh_average_income_ppp` * (income_other_wage / 100),
+    income_other = `83_hh_average_income_ppp` * (income_other / 100)
+  ) %>%
+  # Reshape data to long format for plotting
+  pivot_longer(
+    cols = starts_with("income_"),
+    names_to = "income_source",
+    values_to = "income_amount"
+  )
+
+# Calculate the average income per country, year, and income source
+average_income_data <- q83_14_data_filtered_long %>%
+  group_by(country, year, income_source) %>%
+  summarize(avg_income = mean(income_amount, na.rm = TRUE))
+
+
+q83_14_data_filtered_long <- q83_14_data_filtered_long %>% 
+  filter(income_source == "income_fishing_artisanal")
+average_income_data <- average_income_data %>% 
+  filter(income_source == "income_fishing_artisanal")
+
+
+q83_14_trend_filtered <- q83_14_data_filtered_long %>%
+  group_by(country, year) %>%
+  summarize(avg_income = mean(`income_amount`, na.rm = TRUE))
+
+# Plot with filtered data
+ggplot(q83_14_data_filtered_long, aes(x = as.factor(year), y = `income_amount`, fill = country)) +
+  geom_violin(alpha = 0.5, scale = "width", adjust = 0.8) + # Adjusting scale and smoothness
+  geom_line(data = q83_14_trend_filtered, aes(x = as.factor(year), y = avg_income, group = 1), color = "black", size = 0.5) +
+  geom_point(data = q83_14_trend_filtered, aes(x = as.factor(year), y = avg_income), color = "black", size = 2) +
+  labs(
+    title = "Trend of Average Monthly Household Income from Artisanal Fishing (Q14) by Country",
+    x = "Year",
+    y = "Average Monthly Income per Household from Artisanal Fishing (PPP)"
+  ) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  facet_wrap(~ country)
+
+
+# Plotting the average income by income source per country and year
+# ggplot(average_income_data, aes(x = as.factor(year), y = avg_income, fill = income_source)) +
+#   geom_bar(stat = "identity", position = "stack") +
+#    scale_fill_brewer(palette = "Set3") +  
+#   labs(
+#     title = "Average Income by Source per Country and Year",
+#     x = "Year",
+#     y = "Average Income (PPP)",
+#     fill = "Income Source"
+#   ) +
+#   theme_minimal() +
+#   theme(
+#     axis.text.x = element_text(angle = 45, hjust = 1),
+#     legend.position = "right"
+#   ) +
+#   facet_wrap(~ country)
+
+
+# Reshape the data to long format for easier plotting
+income_data_long <- q83_14_data_filtered_inc %>%
+  select(country, year, starts_with("income_")) %>%
+  pivot_longer(
+    cols = starts_with("income_"),
+    names_to = "income_source",
+    values_to = "income_amount"
+  )
+
+# Define a color palette for income sources
+colors <- brewer.pal(n = length(unique(income_data_long$income_source)), name = "Paired")
+
+# Create the violin plot with colors based on income source
+# ggplot(income_data_long, aes(x = as.factor(year), y = income_amount, fill = income_source, color = income_source)) + 
+#   geom_jitter(width = 0.3, size = 0.7, alpha = 0.4) + 
+#   scale_fill_manual(values = colors) +
+#   scale_color_manual(values = colors) +
+#   labs(
+#     title = "Distribution of Income by Source per Year, Faceted by Country",
+#     x = "Year",
+#     y = "Income Amount (PPP)",
+#     fill = "Income Source",
+#     color = "Income Source"
+#   ) +
+#   theme_minimal() +
+#   theme(
+#     axis.text.x = element_text(angle = 45, hjust = 1),
+#     legend.position = "right"
+#   ) +
+#   facet_wrap(~ country)
+
+# ggplot(income_data_long, aes(x = as.factor(year), y = income_amount, fill = income_source, color = income_source)) + 
+#   geom_jitter(position = position_dodge(width = 0.8), size = 0.7, alpha = 0.4) + 
+#   scale_fill_manual(values = colors) +
+#   scale_color_manual(values = colors) +
+#   labs(
+#     title = "Distribution of Income by Source per Year",
+#     x = "Year",
+#     y = "Income Amount (PPP)",
+#     fill = "Income Source",
+#     color = "Income Source"
+#   ) +
+#   theme_minimal() +
+#   theme(
+#     axis.text.x = element_text(angle = 45, hjust = 1),
+#     legend.position = "right"
+#   ) +
+#   facet_wrap(~ country)
+```
+Trend of Average Monthly Household Income from Artisanal Fishing (Q14) by Country, 2019–2024: The violin plots illustrate the distribution of household income per month derived from artisanal fishing for each year, showing the density of values, while the black dots and lines represent the annual average income trend across six countries.
+
+
+
+
+
+
+# Fish Catch
+
+## Question 21: Current Fish Catch
+
+*Compared to 2 years ago, the current fish catch has...*
+
+Possible answers:
+
+1.  Declined a lot
+
+2.  Declined slightly
+
+3.  Stayed the same
+
+4.  Improved slightly
+
+5.  Improved heavily
+
+
+
+## Question 24: Expected Fish Catch
+
+*In the next 5 years, how do you think the fish catch will be compared to today?*
+
+Possible answers:
+
+1.  Declines a lot
+
+2.  Declines slightly
+
+3.  Stays the same
+
+4.  Improves slightly
+
+5.  Improves heavily
+
+
+
+```{r}
+# Q21
+
+# Find data
+colnames(fastfield)[grepl("21", colnames(fastfield))]
+colnames(kobo_1_fp)[grepl("21", colnames(kobo_1_fp))] # 21_current_fish_catch
+colnames(kobo_2_fp_hon)[grepl("current_fish_catch", colnames(kobo_2_fp_hon))] # 17_current_fish_catch
+colnames(kobo_2_fp_phi)[grepl("current_fish_catch", colnames(kobo_2_fp_phi))]
+
+# Rename
+fastfield$'21_current_fish_catch'<- tolower(gsub(" ", "_", fastfield$'21_current_fish_catch'))
+kobo_1_fp$'21_current_fish_catch'<- tolower(gsub(" ", "_", kobo_1_fp$'21_current_fish_catch'))
+kobo_2_fp_hon$'21_current_fish_catch'<- tolower(gsub(" ", "_", kobo_2_fp_hon$'17_current_fish_catch'))
+kobo_2_fp_phi$'21_current_fish_catch'<- tolower(gsub(" ", "_", kobo_2_fp_phi$'17_current_fish_catch'))
+
+# Answers: "declined_a_lot","not_a_fisher", "not_answered", "improved_slightly", "declined_slightly", "stayed_the_same", "improved_heavily"
+unique(fastfield$'21_current_fish_catch')
+unique(kobo_1_fp$'21_current_fish_catch')
+unique(kobo_2_fp_hon$'21_current_fish_catch')
+unique(kobo_2_fp_phi$'21_current_fish_catch')
+
+kobo_1_fp$`21_current_fish_catch` <- gsub("declined_alot", "declined_a_lot", kobo_1_fp$`21_current_fish_catch`)
+kobo_1_fp$`21_current_fish_catch`[is.na(kobo_1_fp$`21_current_fish_catch`)] <- "not_answered"
+kobo_2_fp_hon$`21_current_fish_catch` <- gsub("declined_alot", "declined_a_lot", kobo_2_fp_hon$`21_current_fish_catch`)
+kobo_2_fp_hon$`21_current_fish_catch`[is.na(kobo_2_fp_hon$`21_current_fish_catch`)] <- "not_answered"
+kobo_2_fp_phi$`21_current_fish_catch` <- gsub("declined_alot", "declined_a_lot", kobo_2_fp_phi$`21_current_fish_catch`)
+kobo_2_fp_phi$`21_current_fish_catch`[is.na(kobo_2_fp_phi$`21_current_fish_catch`)] <- "not_answered"
+
+
+# Q24
+
+# Find data
+colnames(fastfield)[grepl("24", colnames(fastfield))]
+colnames(kobo_1_fp)[grepl("catch_5yrs", colnames(kobo_1_fp))] # 24_catch_5yrs
+colnames(kobo_2_fp_hon)[grepl("catch_5yrs", colnames(kobo_2_fp_hon))] # 19_catch_5yrs
+colnames(kobo_2_fp_phi)[grepl("catch_5yrs", colnames(kobo_2_fp_phi))]
+
+# Rename
+fastfield$'24_catch_5yrs'<- tolower(gsub(" ", "_", fastfield$'24_catch_5yrs'))
+kobo_1_fp$'24_catch_5yrs'<- tolower(gsub(" ", "_", kobo_1_fp$'24_catch_5yrs'))
+kobo_2_fp_hon$'24_catch_5yrs'<- tolower(gsub(" ", "_", kobo_2_fp_hon$'19_catch_5yrs'))
+kobo_2_fp_phi$'24_catch_5yrs'<- tolower(gsub(" ", "_", kobo_2_fp_phi$'19_catch_5yrs'))
+
+# Answers: "improves_slightly", "not_a_fisher", "stays_the_same", "improves_heavily", "declines_slightly", "declines_a_lot", "not_answered"
+unique(fastfield$'24_catch_5yrs')
+unique(kobo_1_fp$'24_catch_5yrs')
+unique(kobo_2_fp_hon$'24_catch_5yrs')
+unique(kobo_2_fp_phi$'24_catch_5yrs')
+
+kobo_1_fp$`24_catch_5yrs` <- gsub("declines_alot", "declines_a_lot", kobo_1_fp$`24_catch_5yrs`)
+kobo_1_fp$`24_catch_5yrs`[is.na(kobo_1_fp$`24_catch_5yrs`)] <- "not_answered"
+kobo_2_fp_hon$`24_catch_5yrs` <- gsub("declines_alot", "declines_a_lot", kobo_2_fp_hon$`24_catch_5yrs`)
+kobo_2_fp_hon$`24_catch_5yrs`[is.na(kobo_2_fp_hon$`24_catch_5yrs`)] <- "not_answered"
+kobo_2_fp_phi$`24_catch_5yrs` <- gsub("declines_alot", "declines_a_lot", kobo_2_fp_phi$`24_catch_5yrs`)
+kobo_2_fp_phi$`24_catch_5yrs`[is.na(kobo_2_fp_phi$`24_catch_5yrs`)] <- "not_answered"
+
+# Combine data for question 21
+q21_data <- bind_rows(
+  fastfield %>% select(year, country, `21_current_fish_catch`),
+  kobo_1_fp %>% select(year, country, `21_current_fish_catch`),
+  kobo_2_fp_hon %>% select(year, country, `21_current_fish_catch`),
+  kobo_2_fp_phi %>% select(year, country, `21_current_fish_catch`)
+) %>% rename(response = `21_current_fish_catch`)
+
+# Combine data for question 24
+q24_data <- bind_rows(
+  fastfield %>% select(year, country, `24_catch_5yrs`),
+  kobo_1_fp %>% select(year, country, `24_catch_5yrs`),
+  kobo_2_fp_hon %>% select(year, country, `24_catch_5yrs`),
+  kobo_2_fp_phi %>% select(year, country, `24_catch_5yrs`)
+) %>% rename(response = `24_catch_5yrs`)
+
+
+
+```
+
+
+
+
+```{r}
+
+# Visualization for q21 responses by year and country
+ggplot(q21_data, aes(x = year, fill = response)) +
+  geom_bar(position = "stack") +
+  facet_wrap(~ country) +
+  labs(title = "Distribution of Responses for Current Fish Catch (Q21) by Year and Country",
+       x = "Year",
+       y = "Count of Responses",
+       fill = "Response") +
+    scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Repeat for q24 data
+ggplot(q24_data, aes(x = year, fill = response)) +
+  geom_bar(position = "stack") +
+  facet_wrap(~ country) +
+  labs(title = "Distribution of Responses for Expected Fish Catch in 5 Years (Q24) by Year and Country",
+       x = "Year",
+       y = "Count of Responses",
+       fill = "Response") +
+    scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+# Map responses to 0-100 scale for q21
+q21_data <- q21_data %>%
+  filter(!response %in% c("not_answered", "not_a_fisher")) %>%
+  mutate(score = case_when(
+    response == "declined_a_lot" ~ 0,
+    response == "declined_slightly" ~ 25,
+    response == "stayed_the_same" ~ 50,
+    response == "improved_slightly" ~ 75,
+    response == "improved_heavily" ~ 100
+  ))
+
+# Map responses to 0-100 scale for q24
+q24_data <- q24_data %>%
+  filter(!response %in% c("not_answered", "not_a_fisher")) %>%
+  mutate(score = case_when(
+    response == "declines_a_lot" ~ 0,
+    response == "declines_slightly" ~ 25,
+    response == "stays_the_same" ~ 50,
+    response == "improves_slightly" ~ 75,
+    response == "improves_heavily" ~ 100
+  ))
+
+# Calculate yearly averages for q21 and q24
+q21_trend <- q21_data %>%
+  group_by(year, country) %>%
+  summarise(avg_score = mean(score, na.rm = TRUE))
+
+q24_trend <- q24_data %>%
+  group_by(year, country) %>%
+  summarise(avg_score = mean(score, na.rm = TRUE))
+
+# # Plotting trends for q21
+# ggplot(q21_trend, aes(x = year, y = avg_score, color = country, group = country)) +
+#   geom_line() +
+#   geom_point() +
+#   labs(title = "Trend of Current Fish Catch Perception (Q21) by Country",
+#        x = "Year",
+#        y = "Average Score (0-100)",
+#        color = "Country") +
+#   theme_minimal()
+# 
+# # Plotting trends for q24
+# ggplot(q24_trend, aes(x = year, y = avg_score, color = country, group = country)) +
+#   geom_line() +
+#   geom_point() +
+#   labs(title = "Trend of Expected Fish Catch in 5 Years (Q24) by Country",
+#        x = "Year",
+#        y = "Average Score (0-100)",
+#        color = "Country") +
+#   theme_minimal()
+
+
+# Plotting trends for q21 with individual observations and trend line
+ggplot(q21_data, aes(x = as.factor(year), y = score, fill = country)) +
+  geom_violin(alpha = 0.5) +  # Violin plot to show distribution
+  geom_line(data = q21_trend, aes(x = as.factor(year), y = avg_score, group = 1), color = "black", size = 0.5) +
+  geom_point(data = q21_trend, aes(x = as.factor(year), y = avg_score), color = "black", size = 2) +
+  labs(title = "Trend of Current Fish Catch Perception (Q21) by Country",
+       x = "Year",
+       y = "Average Score (0-100)") +
+    scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  facet_wrap(~ country)
+
+
+
+# Plotting trends for q24 with individual observations and trend line
+ggplot(q24_data, aes(x = as.factor(year), y = score, fill = country)) +
+  geom_violin(alpha = 0.5) +  # Violin plot to show distribution
+  geom_line(data = q24_trend, aes(x = as.factor(year), y = avg_score, group = 1), color = "black", size = 0.5) +
+  geom_point(data = q24_trend, aes(x = as.factor(year), y = avg_score), color = "black", size = 2) +
+  labs(title = "Trend of Expected Fish Catch in 5 Years (Q24) by Country",
+       x = "Year",
+       y = "Average Score (0-100)") +
+    scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  facet_wrap(~ country)
+
+
+
+
+
+```
+
+
+# Food Security Data
+
+## Question 72: Food Availability
+
+*Are you confident that you will be able to procure enough food for you and your family for the next 12 months?*
+
+Possible answers:
+
+1.  Certain to have shortage
+
+2.  High chance of having shortage
+
+3.  Uncertain
+
+4.  Confident to procure enough food
+
+5.  Very confident to procure enough food
+
+
+
+<br>
+
+
+
+Other relevant questions regarding Food Security (to add to the analysis): 
+
+- Q70: How do you rate the last year in terms of food availability?
+
+- Q71: Consider the following statement: "I worry about not having enough food for everyone in the household" Was that often sometimes or never true for you in the last 12 months?
+
+- Q73: In the last 12 months, how often did your household eat fish?
+
+
+
+```{r}
+
+# Find data
+# colnames(fastfield)[grepl("72", colnames(fastfield))]
+# colnames(kobo_1_fp)[grepl("food_procurement", colnames(kobo_1_fp))]
+# colnames(kobo_2_fp_hon)[grepl("food_procurement", colnames(kobo_2_fp_hon))]
+
+
+# Select Q24, site, year
+fastfield_q72 <- fastfield %>% 
+  select(ma_name, country, year, '72_food_procurement')
+fastfield_q72$'72_food_procurement'<- tolower(gsub(" ", "_", fastfield_q72$'72_food_procurement'))
+
+kobo_1_fp_q72 <- kobo_1_fp %>% 
+  select(ma_name, country, year, '72_food_procurement')
+kobo_1_fp_q72$'72_food_procurement'<- tolower(gsub(" ", "_", kobo_1_fp_q72$'72_food_procurement'))
+
+kobo_2_fp_hon_q72 <- kobo_2_fp_hon %>% 
+  select(ma_name, country, year, '50_food_procurement') # here is the question 19!
+kobo_2_fp_hon_q72$'72_food_procurement'<- tolower(gsub(" ", "_", kobo_2_fp_hon_q72$'50_food_procurement')) #change column name
+kobo_2_fp_hon_q72 <- kobo_2_fp_hon_q72 %>% 
+  select(ma_name, country, year, '72_food_procurement')
+
+# Check answers
+# Possible answers:
+# 1. Certain to have shortage
+# 2. High chance of having shortage
+# 3. Uncertain
+# 4. Confident to procure enough food
+# 5. Very confident to procure enough food
+
+unique(fastfield_q72$`72_food_procurement`)
+unique(kobo_1_fp_q72$`72_food_procurement`)
+unique(kobo_2_fp_hon_q72$`72_food_procurement`)
+
+# Combine datasets
+q72 <- bind_rows(
+  select(fastfield_q72, ma_name, country, year, `72_food_procurement`),
+  select(kobo_1_fp_q72, ma_name, country, year, `72_food_procurement`),
+  select(kobo_2_fp_hon_q72, ma_name, country, year, `72_food_procurement`)
+)
+
+# To continuous 
+q72 <- q72 %>%
+  mutate(q72_continuous = case_when(
+    `72_food_procurement` == "certain" ~ 0,
+    `72_food_procurement` == "high_chance" ~ 25,
+    `72_food_procurement` == "uncertain" ~ 50,
+    `72_food_procurement` == "confident_not" ~ 75,
+    `72_food_procurement` == "very_confident_not" ~ 100
+  ))
+
+
+
+q72_trend <- q72 %>%
+  group_by(year, country) %>%
+  summarise(avg_score = mean(q72_continuous, na.rm = TRUE))
+
+# Plotting trends for q24 with individual observations and trend line
+ggplot(q72, aes(x = as.factor(year), y = q72_continuous, fill = country)) +
+  geom_violin(alpha = 0.5) +  # Violin plot to show distribution
+  geom_line(data = q72_trend, aes(x = as.factor(year), y = avg_score, group = 1), color = "black", size = 0.5) +
+  geom_point(data = q72_trend, aes(x = as.factor(year), y = avg_score), color = "black", size = 2) +
+  labs(title = "Trend of Food Security (Q24) by Country",
+       x = "Year",
+       y = "Average Score (0-100)") +
+    scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  facet_wrap(~ country)
+
+
+```
+
